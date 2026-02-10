@@ -27,7 +27,7 @@ from ui_styles import ThemeManager
 
 # Import for charts
 try:
-    from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
     from matplotlib.figure import Figure
     import matplotlib.pyplot as plt
     MATPLOTLIB_AVAILABLE = True
@@ -54,7 +54,7 @@ class TrainingWorker(QThread):
     def run(self):
         """Execute training in separate thread"""
         try:
-            from ultralytics import YOLO
+            from ultralytics import YOLO  # type: ignore
             from pathlib import Path
             import os
             
@@ -195,8 +195,11 @@ class TrainingWorker(QThread):
                 workers=self.config.get('workers', 8),
             )
             
-            best_model_path = str(Path(results.save_dir) / 'weights' / 'best.pt')
-            self.training_complete.emit(best_model_path)
+            if results and hasattr(results, 'save_dir') and results.save_dir:
+                best_model_path = str(Path(results.save_dir) / 'weights' / 'best.pt')
+                self.training_complete.emit(best_model_path)
+            else:
+                self.training_error.emit("Training completed but could not locate best model.")
             
         except Exception as e:
             self.training_error.emit(str(e))
@@ -662,6 +665,8 @@ class DatasetTab(QWidget):
         
         # Count actual class occurrences from label files
         try:
+            if not self.data_yaml_path:
+                raise ValueError("data_yaml_path is not set")
             dataset_root = Path(self.data_yaml_path).parent
             if hasattr(self, 'dataset_info') and 'path' in self.dataset_info:
                 dataset_root = Path(self.dataset_info['path'])
@@ -999,6 +1004,7 @@ class TrainingConfigTab(QWidget):
         basic_layout.addWidget(QLabel("Device:"), row, 2)
         self.device_combo = QComboBox()
         self.device_combo.addItems(["0 (GPU 0)", "1 (GPU 1)", "cpu"])
+        self.device_combo.setCurrentText("cpu")
         self.device_combo.setToolTip("Computing device (GPU recommended)")
         basic_layout.addWidget(self.device_combo, row, 3)
         
@@ -1649,7 +1655,7 @@ class ResultsTab(QWidget):
             return
             
         try:
-            from ultralytics import YOLO
+            from ultralytics import YOLO  # type: ignore
             from pathlib import Path
             import os
             
@@ -1718,12 +1724,15 @@ class ResultsTab(QWidget):
             if msg_box.clickedButton() == open_btn:
                 # Open directory in file explorer
                 try:
-                    if platform.system() == 'Windows':
-                        os.startfile(save_dir)
-                    elif platform.system() == 'Darwin':
-                        subprocess.Popen(['open', save_dir])
-                    else:  # Linux
-                        subprocess.Popen(['xdg-open', save_dir])
+                    if save_dir and isinstance(save_dir, str):
+                        if platform.system() == 'Windows':
+                            os.startfile(save_dir)
+                        elif platform.system() == 'Darwin':
+                            subprocess.Popen(['open', save_dir])
+                        else:  # Linux
+                            subprocess.Popen(['xdg-open', save_dir])
+                    else:
+                        QMessageBox.warning(self, "Error", "Invalid results directory path.")
                 except Exception as e:
                     QMessageBox.warning(self, "Error", f"Failed to open directory:\n{str(e)}")
             
@@ -1748,7 +1757,7 @@ class ResultsTab(QWidget):
             return
             
         try:
-            from ultralytics import YOLO
+            from ultralytics import YOLO  # type: ignore
             from pathlib import Path
             import os
             
@@ -1765,7 +1774,10 @@ class ResultsTab(QWidget):
                 self.results_text.setText("Running validation... Please wait.")
                 QApplication.processEvents()
                 model = YOLO(self.model_path)
-            metrics = model.val(data=data_yaml)
+            metrics = model.val(data=data_yaml) if data_yaml else None
+            if not metrics:
+                self.results_text.setText("Validation failed: data_yaml not provided.")
+                return
             
             # Format results
             results_text = f"""
@@ -1795,7 +1807,7 @@ class ResultsTab(QWidget):
             return
             
         try:
-            from ultralytics import YOLO
+            from ultralytics import YOLO  # type: ignore
             from pathlib import Path
             import os
             
