@@ -1,0 +1,27 @@
+# YOLO Training GUI - Requirements
+
+# Core Framework
+PySide6>=6.6.0
+PySide6-Addons>=6.6.0
+PySide6-Essentials>=6.6.0
+
+# YOLO and Deep Learning
+ultralytics>=8.0.0
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Data Visualization
+matplotlib>=3.7.0
+numpy>=1.24.0
+
+# Data Processing
+opencv-python>=4.8.0
+pillow>=10.0.0
+pyyaml>=6.0
+
+# Optional: For TensorRT export (Jetson/NVIDIA GPUs)
+# onnx>=1.14.0
+# onnxruntime-gpu>=1.15.0
+
+# Optional: For better performance monitoring
+# psutil>=5.9.0

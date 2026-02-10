@@ -1,0 +1,50 @@
+# Example data.yaml for YOLO Training
+# Copy this file to your dataset folder and modify as needed
+
+# IMPORTANT: Directory Structure Must Be:
+# dataset_root/
+# ├── train/
+# │   ├── images/     (training images)
+# │   └── labels/     (training labels in YOLO format)
+# ├── val/
+# │   ├── images/     (validation images)
+# │   └── labels/     (validation labels in YOLO format)
+# └── test/ (optional)
+#     ├── images/     (test images)
+#     └── labels/     (test labels in YOLO format)
+
+# Path to dataset root (use absolute path)
+path: D:/my_dataset  # Windows
+# path: /home/user/my_dataset  # Linux/Jetson
+
+# IMPORTANT: Do NOT modify these paths - they must match the directory structure above
+train: train
+val: val
+test: test  # optional
+
+# Number of classes
+nc: 3
+
+# Class names (must match the order used in label files)
+# Index must start from 0 and be consecutive
+names:
+  0: person
+  1: car
+  2: bicycle
+
+# Alternative format (list instead of dict):
+# names: ['person', 'car', 'bicycle']
+
+# Label Format (YOLO format - txt files):
+# Each image must have a corresponding .txt file with the same name
+# Format per line: <class_id> <x_center> <y_center> <width> <height>
+# All coordinates are normalized (0-1)
+# Example:
+#   0 0.5 0.5 0.3 0.4
+#   1 0.25 0.25 0.15 0.2
+
+# Optional: Download script (if dataset needs to be downloaded)
+# download: |
+#   import subprocess
+#   subprocess.run(['wget', 'http://example.com/dataset.zip'])
+#   subprocess.run(['unzip', 'dataset.zip'])
