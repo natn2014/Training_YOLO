@@ -5,8 +5,8 @@ from typing import List, Optional
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QThread, Signal, Slot
-from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPen, QPixmap
+from PySide6.QtCore import Qt, QThread, Signal, Slot, QSize
+from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -14,10 +14,14 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSlider,
+    QSpinBox,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -26,9 +30,15 @@ from PySide6.QtWidgets import (
 
 try:
     from ultralytics import YOLO  # type: ignore
-    YOLO("yolo11n.pt")
+    YOLO("yolo26n.pt")
 except Exception:
     YOLO = None
+
+try:
+    from Relay_B import Relay  # type: ignore
+    RELAY_AVAILABLE = True
+except Exception:
+    RELAY_AVAILABLE = False
 
 
 ALLOWED_FPS = [24, 30, 60]
@@ -79,6 +89,56 @@ def nearest_allowed_fps(value: float) -> int:
     return min(ALLOWED_FPS, key=lambda x: abs(x - value))
 
 
+class ZoomableLabel(QLabel):
+    """Custom QLabel that supports mouse wheel zooming."""
+    zoom_changed = Signal(float)  # Emits new zoom level
+    
+    def __init__(self) -> None:
+        super().__init__()
+        self._zoom_level = 1.0
+        self._original_pixmap = None
+    
+    def set_zoom_level(self, zoom: float) -> None:
+        """Set zoom level (1.0 = 100%)."""
+        self._zoom_level = max(0.1, min(zoom, 5.0))  # Clamp between 0.1x and 5.0x
+        self.zoom_changed.emit(self._zoom_level)
+    
+    def get_zoom_level(self) -> float:
+        return self._zoom_level
+    
+    def setPixmap(self, pixmap: QPixmap) -> None:
+        """Override setPixmap to store original and apply zoom."""
+        self._original_pixmap = pixmap
+        self._update_display()
+    
+    def _update_display(self) -> None:
+        """Update displayed pixmap with current zoom level."""
+        if self._original_pixmap is None or self._original_pixmap.isNull():
+            return
+        
+        # Scale original pixmap by zoom level
+        zoomed_size = QSize(
+            int(self._original_pixmap.width() * self._zoom_level),
+            int(self._original_pixmap.height() * self._zoom_level)
+        )
+        zoomed_pixmap = self._original_pixmap.scaledToWidth(
+            zoomed_size.width(),
+            Qt.SmoothTransformation
+        )
+        super().setPixmap(zoomed_pixmap)
+    
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """Handle mouse wheel for zooming."""
+        if event.angleDelta().y() > 0:
+            # Scroll up = zoom in
+            self.set_zoom_level(self._zoom_level * 1.1)
+        else:
+            # Scroll down = zoom out
+            self.set_zoom_level(self._zoom_level / 1.1)
+        event.accept()
+
+
+
 class VideoWorker(QThread):
     frame_ready = Signal(QImage, list)
     status = Signal(str)
@@ -90,7 +150,7 @@ class VideoWorker(QThread):
         self._model_path: Optional[Path] = None
         self._model = None
         self._target_fps: int = 30
-        self._device: str = "cpu"
+        self._device: str = "cuda" if _cuda_available() else "cpu"
 
     def set_camera_index(self, index: Optional[int]) -> None:
         self._camera_index = index
@@ -240,6 +300,17 @@ class MainWindow(QWidget):
         self._model_classes = []
         self._match_class = None
         self._match_detected = False
+        self._zoom_level = 1.0
+        
+        # Relay control
+        self._relay = None
+        self._relay_connected = False
+        self._relay_host = "192.168.1.201"
+        self._relay_port = 502
+        # Track 8 class-to-relay-channel mappings: list of {"class": str|None, "channel": int, "last_state": bool}
+        self._relay_mappings = [
+            {"class": None, "channel": i + 1, "last_state": False} for i in range(8)
+        ]
         
         # Metrics tracking
         self._fps_counter = 0
@@ -264,14 +335,15 @@ class MainWindow(QWidget):
         self.compute_combo.addItem("cuda")
         self.compute_combo.addItem("cuda:0")
         self.compute_combo.setMaximumWidth(140)
-        self.compute_combo.currentTextChanged.connect(self.on_compute_changed)
-        # Auto-select CUDA if available
+        # Auto-select CUDA if available (connection will be made later after status_label is created)
         try:
             if _cuda_available():
                 idx = self.compute_combo.findText("cuda")
                 if idx >= 0:
                     self.compute_combo.setCurrentIndex(idx)
                     self._worker.set_device("cuda")
+                    # reflect in status label
+                    self.status_label.setText("Compute: cuda")
             else:
                 self._worker.set_device("cpu")
         except Exception:
@@ -296,6 +368,9 @@ class MainWindow(QWidget):
         
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("font-size: 10pt")
+        
+        # Now safe to connect the signal after status_label exists
+        self.compute_combo.currentTextChanged.connect(self.on_compute_changed)
         
         metrics_layout.addWidget(self.fps_label, 0)
         metrics_layout.addWidget(self.detections_label, 0)
@@ -341,11 +416,43 @@ class MainWindow(QWidget):
         cam_layout.addWidget(self.capture_button, 0)
         cam_frame.setLayout(cam_layout)
         
+        # Video Display with Zoom Controls
+        video_frame = QFrame()
+        video_layout = QVBoxLayout()
+        
+        # Zoom controls
+        zoom_control_layout = QHBoxLayout()
+        self.zoom_out_button = QPushButton("🔍➖")
+        self.zoom_out_button.setMaximumWidth(50)
+        self.zoom_out_button.clicked.connect(self.zoom_out)
+        
+        self.zoom_label = QLabel("Zoom: 100%")
+        self.zoom_label.setAlignment(Qt.AlignCenter)
+        self.zoom_label.setStyleSheet("font-size: 10pt; font-weight: bold;")
+        
+        self.zoom_in_button = QPushButton("🔍➕")
+        self.zoom_in_button.setMaximumWidth(50)
+        self.zoom_in_button.clicked.connect(self.zoom_in)
+        
+        self.reset_zoom_button = QPushButton("Reset")
+        self.reset_zoom_button.setMaximumWidth(70)
+        self.reset_zoom_button.clicked.connect(self.reset_zoom)
+        
+        zoom_control_layout.addWidget(self.zoom_out_button, 0)
+        zoom_control_layout.addWidget(self.zoom_label, 1)
+        zoom_control_layout.addWidget(self.zoom_in_button, 0)
+        zoom_control_layout.addWidget(self.reset_zoom_button, 0)
+        
         # Video Display
-        self.video_label = QLabel()
+        self.video_label = ZoomableLabel()
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setMinimumSize(640, 480)
         self.video_label.setStyleSheet("background-color: #000000; border-radius: 8px;")
+        self.video_label.zoom_changed.connect(self.on_zoom_changed)
+        
+        video_layout.addLayout(zoom_control_layout, 0)
+        video_layout.addWidget(self.video_label, 1)
+        video_frame.setLayout(video_layout)
         
         # Filter Panel (Sidebar)
         filter_frame = QFrame()
@@ -390,18 +497,6 @@ class MainWindow(QWidget):
         self.class_filters_scroll.setMinimumHeight(180)
         filter_layout.addWidget(self.class_filters_scroll, 1)
         
-        filter_layout.addSpacing(15)
-        
-        # Match Alert Section
-        match_label = QLabel("🎯 Match Alert")
-        match_label.setStyleSheet("font-size: 10pt; font-weight: bold;")
-        filter_layout.addWidget(match_label)
-        
-        self.match_combo = QComboBox()
-        self.match_combo.addItem("None", None)
-        self.match_combo.currentIndexChanged.connect(self.on_match_class_changed)
-        filter_layout.addWidget(self.match_combo)
-        
         filter_frame.setLayout(filter_layout)
         filter_frame.setMaximumWidth(240)
         
@@ -423,20 +518,109 @@ class MainWindow(QWidget):
         table_frame.setLayout(table_layout)
         table_frame.setMaximumWidth(240)
         
-        # Sidebar with filter and table
-        # Main content area
-        content_layout = QHBoxLayout()
-        content_layout.addWidget(self.video_label, 2)
-        content_layout.addWidget(filter_frame, 0)
-        content_layout.addWidget(table_frame, 0)
+        # ── Build Relay Tab ──
+        relay_tab = QWidget()
+        relay_tab_layout = QVBoxLayout()
+        
+        # Relay Connection Section
+        relay_conn_frame = QFrame()
+        relay_conn_layout = QHBoxLayout()
+        
+        relay_conn_layout.addWidget(QLabel("Host:"), 0)
+        self.relay_host_input = QLineEdit()
+        self.relay_host_input.setText(self._relay_host)
+        self.relay_host_input.setPlaceholderText("192.168.1.201")
+        self.relay_host_input.setMaximumWidth(180)
+        relay_conn_layout.addWidget(self.relay_host_input, 0)
+        
+        relay_conn_layout.addWidget(QLabel("Port:"), 0)
+        self.relay_port_spin = QSpinBox()
+        self.relay_port_spin.setRange(1, 65535)
+        self.relay_port_spin.setValue(self._relay_port)
+        self.relay_port_spin.setMaximumWidth(100)
+        relay_conn_layout.addWidget(self.relay_port_spin, 0)
+        
+        self.relay_connect_button = QPushButton("🔌 Connect Relay")
+        self.relay_connect_button.clicked.connect(self.connect_relay)
+        self.relay_connect_button.setMinimumHeight(36)
+        relay_conn_layout.addWidget(self.relay_connect_button, 0)
+        
+        self.relay_status_label = QLabel("Status: Disconnected")
+        self.relay_status_label.setStyleSheet("font-size: 11pt; color: #ff6b6b; font-weight: bold;")
+        relay_conn_layout.addWidget(self.relay_status_label, 1)
+        
+        relay_conn_frame.setLayout(relay_conn_layout)
+        relay_tab_layout.addWidget(relay_conn_frame, 0)
+        
+        # Match-to-Relay Mapping Table (8 rows)
+        mapping_label = QLabel("🎯 Class → Relay Channel Mapping")
+        mapping_label.setStyleSheet("font-size: 12pt; font-weight: bold;")
+        relay_tab_layout.addWidget(mapping_label)
+        
+        self.relay_mapping_table = QTableWidget(8, 3)
+        self.relay_mapping_table.setHorizontalHeaderLabels(["Class", "Relay Channel", "Relay Status"])
+        self.relay_mapping_table.verticalHeader().setVisible(False)
+        self.relay_mapping_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.relay_mapping_table.setSelectionMode(QTableWidget.NoSelection)
+        self.relay_mapping_table.setAlternatingRowColors(True)
+        header = self.relay_mapping_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        
+        # Populate 8 rows with dropdowns
+        for row in range(8):
+            # Column 0: Class dropdown
+            class_combo = QComboBox()
+            class_combo.addItem("None", None)
+            class_combo.currentIndexChanged.connect(
+                lambda idx, r=row: self._on_relay_mapping_class_changed(r)
+            )
+            self.relay_mapping_table.setCellWidget(row, 0, class_combo)
+            
+            # Column 1: Relay channel dropdown
+            ch_combo = QComboBox()
+            for ch in range(1, 9):
+                ch_combo.addItem(f"CH {ch}", ch)
+            ch_combo.setCurrentIndex(row)  # Default: row 0 = CH1, row 1 = CH2, etc.
+            ch_combo.currentIndexChanged.connect(
+                lambda idx, r=row: self._on_relay_mapping_channel_changed(r)
+            )
+            self.relay_mapping_table.setCellWidget(row, 1, ch_combo)
+            
+            # Column 2: Relay status label
+            status_item = QTableWidgetItem("OFF")
+            status_item.setTextAlignment(Qt.AlignCenter)
+            status_item.setForeground(QBrush(QColor("#ff6b6b")))
+            self.relay_mapping_table.setItem(row, 2, status_item)
+        
+        relay_tab_layout.addWidget(self.relay_mapping_table, 1)
+        
+        # Match Status (moved here)
+        relay_tab_layout.addWidget(self.match_status_label, 0)
+        
+        relay_tab.setLayout(relay_tab_layout)
+        
+        # ── Tab Widget to hold Monitor + Relay ──
+        self.tab_widget = QTabWidget()
+        
+        # Monitor tab (main content)
+        monitor_tab = QWidget()
+        monitor_layout = QHBoxLayout()
+        monitor_layout.addWidget(video_frame, 2)
+        monitor_layout.addWidget(filter_frame, 0)
+        monitor_layout.addWidget(table_frame, 0)
+        monitor_tab.setLayout(monitor_layout)
+        
+        self.tab_widget.addTab(monitor_tab, "📹 Monitor")
+        self.tab_widget.addTab(relay_tab, "⚡ Relay")
         
         # Main layout
         layout = QVBoxLayout()
         layout.addWidget(header_frame, 0)
         layout.addWidget(metrics_frame, 0)
-        layout.addWidget(self.match_status_label, 0)
         layout.addWidget(cam_frame, 0)
-        layout.addLayout(content_layout, 1)
+        layout.addWidget(self.tab_widget, 1)
         
         self.setLayout(layout)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -506,13 +690,8 @@ class MainWindow(QWidget):
             self.class_filters_layout.addWidget(checkbox)
             self._selected_classes.add(class_name)
         
-        # Update match combo dropdown
-        self.match_combo.blockSignals(True)
-        self.match_combo.clear()
-        self.match_combo.addItem("None", None)
-        for class_name in sorted(self._model_classes):
-            self.match_combo.addItem(class_name, class_name)
-        self.match_combo.blockSignals(False)
+        # Update relay mapping table class dropdowns
+        self._update_relay_mapping_classes()
 
     @Slot()
     def start_stream(self) -> None:
@@ -564,34 +743,193 @@ class MainWindow(QWidget):
         else:
             self._selected_classes.discard(class_name)
 
-    def _update_match_status_label(self) -> None:
-        """Update match status label based on detected classes in table."""
-        if self._match_class:
-            # Check if match class is in current detections
-            if self._match_class in self._class_counts and self._class_counts[self._match_class] > 0:
-                self.match_status_label.setText(
-                    f"Matched = {self._match_class} ({self._class_counts[self._match_class]} detected)"
-                )
-            else:
-                self.match_status_label.setText(
-                    "Checking for matches..."
-                )
-        else:
-            self.match_status_label.setText(
-                "Checking for matches..."
-            )
+    def _update_relay_mapping_classes(self) -> None:
+        """Update all class dropdowns in the relay mapping table."""
+        sorted_classes = sorted(self._model_classes)
+        for row in range(8):
+            combo = self.relay_mapping_table.cellWidget(row, 0)
+            if combo is None:
+                continue
+            combo.blockSignals(True)
+            current_data = combo.currentData()
+            combo.clear()
+            combo.addItem("None", None)
+            for class_name in sorted_classes:
+                combo.addItem(class_name, class_name)
+            # Restore previous selection if still valid
+            if current_data:
+                idx = combo.findData(current_data)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+            combo.blockSignals(False)
+            # Sync mapping state
+            self._relay_mappings[row]["class"] = combo.currentData()
 
-    @Slot()
-    def on_match_class_changed(self) -> None:
-        self._match_class = self.match_combo.currentData()
-        self._match_detected = False
-        self._update_match_status_label()
+    def _on_relay_mapping_class_changed(self, row: int) -> None:
+        """Handle class dropdown change in relay mapping table."""
+        combo = self.relay_mapping_table.cellWidget(row, 0)
+        if combo is not None:
+            self._relay_mappings[row]["class"] = combo.currentData()
+
+    def _on_relay_mapping_channel_changed(self, row: int) -> None:
+        """Handle channel dropdown change in relay mapping table."""
+        combo = self.relay_mapping_table.cellWidget(row, 1)
+        if combo is not None:
+            self._relay_mappings[row]["channel"] = combo.currentData()
+
+    def _update_match_status_label(self) -> None:
+        """Update match status and relay state for all 8 mappings."""
+        matched_classes = []
+        for row, mapping in enumerate(self._relay_mappings):
+            class_name = mapping["class"]
+            channel = mapping["channel"]
+            if class_name is None:
+                # No class selected for this row
+                if mapping["last_state"]:
+                    self._set_relay_channel(channel, False)
+                    mapping["last_state"] = False
+                self._set_relay_status_cell(row, False)
+                continue
+            
+            detected = class_name in self._class_counts and self._class_counts[class_name] > 0
+            if detected:
+                matched_classes.append(f"{class_name}→CH{channel}")
+            
+            if detected and not mapping["last_state"]:
+                self._set_relay_channel(channel, True)
+                mapping["last_state"] = True
+            elif not detected and mapping["last_state"]:
+                self._set_relay_channel(channel, False)
+                mapping["last_state"] = False
+            
+            self._set_relay_status_cell(row, detected)
+        
+        if matched_classes:
+            self.match_status_label.setText(f"Matched: {', '.join(matched_classes)}")
+        else:
+            active = [m["class"] for m in self._relay_mappings if m["class"] is not None]
+            if active:
+                self.match_status_label.setText("Checking for matches...")
+            else:
+                self.match_status_label.setText("No class-to-relay mappings configured")
+
+    def _set_relay_status_cell(self, row: int, is_on: bool) -> None:
+        """Update the relay status cell in the mapping table."""
+        item = self.relay_mapping_table.item(row, 2)
+        if item is None:
+            item = QTableWidgetItem()
+            item.setTextAlignment(Qt.AlignCenter)
+            self.relay_mapping_table.setItem(row, 2, item)
+        if is_on:
+            item.setText("ON")
+            item.setForeground(QBrush(QColor("#51cf66")))
+        else:
+            item.setText("OFF")
+            item.setForeground(QBrush(QColor("#ff6b6b")))
+
+    def _set_relay_channel(self, channel: int, on: bool) -> None:
+        """Send relay on/off command for a specific channel."""
+        if not self._relay_connected or self._relay is None:
+            return
+        try:
+            if on:
+                self._relay.on(channel)
+            else:
+                self._relay.off(channel)
+        except Exception as e:
+            self.status_label.setText(f"Relay CH{channel} error: {str(e)}")
 
     @Slot(str)
     def on_compute_changed(self, device: str) -> None:
         # Update status and tell worker to use selected device
         self.status_label.setText(f"Compute: {device}")
         self._worker.set_device(device)
+
+    @Slot(float)
+    def on_zoom_changed(self, zoom_level: float) -> None:
+        """Handle zoom level changes."""
+        self._zoom_level = zoom_level
+        self.zoom_label.setText(f"Zoom: {zoom_level * 100:.0f}%")
+
+    @Slot()
+    def zoom_in(self) -> None:
+        """Zoom in by 10%."""
+        self.video_label.set_zoom_level(self._zoom_level * 1.1)
+
+    @Slot()
+    def zoom_out(self) -> None:
+        """Zoom out by 10%."""
+        self.video_label.set_zoom_level(self._zoom_level / 1.1)
+
+    @Slot()
+    def reset_zoom(self) -> None:
+        """Reset zoom to 100%."""
+        self.video_label.set_zoom_level(1.0)
+
+    @Slot()
+    def connect_relay(self) -> None:
+        """Connect to relay board."""
+        if not RELAY_AVAILABLE:
+            self.relay_status_label.setText("Status: Relay library not available")
+            self.relay_status_label.setStyleSheet("font-size: 11pt; color: #ff6b6b; font-weight: bold;")
+            return
+        
+        try:
+            self._relay_host = self.relay_host_input.text().strip()
+            self._relay_port = self.relay_port_spin.value()
+            
+            if self._relay is not None:
+                try:
+                    self._relay.disconnect()
+                except Exception:
+                    pass
+            
+            self._relay = Relay(host=self._relay_host, port=self._relay_port)
+            self._relay.connect()
+            self._relay_connected = True
+            
+            self.relay_status_label.setText(f"Status: Connected ({self._relay_host}:{self._relay_port})")
+            self.relay_status_label.setStyleSheet("font-size: 11pt; color: #51cf66; font-weight: bold;")
+            self.relay_connect_button.setText("🔌 Disconnect Relay")
+            self.relay_connect_button.clicked.disconnect()
+            self.relay_connect_button.clicked.connect(self.disconnect_relay)
+            
+            self.status_label.setText(f"Relay connected to {self._relay_host}:{self._relay_port}")
+        except Exception as e:
+            self.relay_status_label.setText("Status: Connection failed")
+            self.relay_status_label.setStyleSheet("font-size: 11pt; color: #ff6b6b; font-weight: bold;")
+            self.status_label.setText(f"Relay connection error: {str(e)}")
+            self._relay_connected = False
+
+    @Slot()
+    def disconnect_relay(self) -> None:
+        """Disconnect from relay board and turn off all active channels."""
+        try:
+            if self._relay is not None and self._relay_connected:
+                for mapping in self._relay_mappings:
+                    if mapping["last_state"]:
+                        try:
+                            self._relay.off(mapping["channel"])
+                        except Exception:
+                            pass
+                        mapping["last_state"] = False
+                self._relay.disconnect()
+            self._relay_connected = False
+            self._relay = None
+            
+            # Reset all status cells
+            for row in range(8):
+                self._set_relay_status_cell(row, False)
+            
+            self.relay_status_label.setText("Status: Disconnected")
+            self.relay_status_label.setStyleSheet("font-size: 11pt; color: #ff6b6b; font-weight: bold;")
+            self.relay_connect_button.setText("🔌 Connect Relay")
+            self.relay_connect_button.clicked.disconnect()
+            self.relay_connect_button.clicked.connect(self.connect_relay)
+            
+            self.status_label.setText("Relay disconnected")
+        except Exception as e:
+            self.status_label.setText(f"Relay disconnection error: {str(e)}")
 
     @Slot(QImage, list)
     def on_frame(self, image: QImage, detections: list) -> None:
@@ -612,14 +950,9 @@ class MainWindow(QWidget):
         
         # Filter detections based on selected classes and confidence threshold
         filtered_detections = []
-        self._match_detected = False
         for det in detections:
             class_name = det.get("class_name", "unknown")
             conf = float(det["label"].split()[-1]) if " " in det["label"] else 0.0
-            
-            # Check if this detection matches the alert class
-            if self._match_class and class_name == self._match_class:
-                self._match_detected = True
             
             # Filter by selected classes and confidence
             if class_name in self._selected_classes and conf >= self._confidence_threshold:
@@ -653,6 +986,7 @@ class MainWindow(QWidget):
         self.detections_label.setText(f"Detections: {self._total_detections}")
         
         self._current_pixmap = pixmap
+        # Set pixmap to zoomable label (it will handle scaling with zoom level)
         self.video_label.setPixmap(pixmap)
         self._update_class_table(detections)
 
@@ -684,6 +1018,7 @@ class MainWindow(QWidget):
 
     def closeEvent(self, event) -> None:
         self.stop_stream()
+        self.disconnect_relay()
         super().closeEvent(event)
 
 
