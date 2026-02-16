@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 try:
     from ultralytics import YOLO  # type: ignore
+    YOLO("yolo11n.pt")
 except Exception:
     YOLO = None
 
@@ -33,15 +34,42 @@ except Exception:
 ALLOWED_FPS = [24, 30, 60]
 
 
+def _video_backend_for_platform() -> int:
+    if sys.platform.startswith("linux"):
+        return cv2.CAP_V4L2
+    if sys.platform.startswith("win"):
+        return cv2.CAP_DSHOW
+    if sys.platform.startswith("darwin"):
+        # macOS typically uses AVFoundation
+        return cv2.CAP_AVFOUNDATION
+    return 0
+
+
+def _cuda_available() -> bool:
+    try:
+        import torch  # type: ignore
+        return torch.cuda.is_available()
+    except Exception:
+        return False
+
+
 def find_cameras(max_index: int = 10) -> List[int]:
     available = []
+    backend = _video_backend_for_platform()
     for idx in range(max_index):
-        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-        if cap.isOpened():
-            available.append(idx)
+        try:
+            cap = cv2.VideoCapture(idx, backend) if backend != 0 else cv2.VideoCapture(idx)
+            if cap is None:
+                continue
+            if cap.isOpened():
+                available.append(idx)
             cap.release()
-        else:
-            cap.release()
+        except Exception:
+            try:
+                if cap is not None:
+                    cap.release()
+            except Exception:
+                pass
     return available
 
 
@@ -62,6 +90,7 @@ class VideoWorker(QThread):
         self._model_path: Optional[Path] = None
         self._model = None
         self._target_fps: int = 30
+        self._device: str = "cpu"
 
     def set_camera_index(self, index: Optional[int]) -> None:
         self._camera_index = index
@@ -69,6 +98,9 @@ class VideoWorker(QThread):
     def set_model_path(self, path: Optional[Path]) -> None:
         self._model_path = path
         self._model = None
+
+    def set_device(self, device: str) -> None:
+        self._device = device
 
     def stop(self) -> None:
         self._running = False
@@ -80,7 +112,21 @@ class VideoWorker(QThread):
             self.status.emit("Ultralytics not available. Install requirements.")
             return
         try:
-            self._model = YOLO(str(self._model_path))
+            try:
+                self._model = YOLO(str(self._model_path), device=self._device)
+            except TypeError:
+                # Older ultralytics may not accept device in constructor
+                self._model = YOLO(str(self._model_path))
+                # Try to move underlying PyTorch model to device if available
+                try:
+                    import torch  # type: ignore
+                    if self._device != "cpu" and hasattr(self._model, "model"):
+                        try:
+                            self._model.model.to(self._device)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             self.status.emit(f"Model loaded: {self._model_path.name}")
         except Exception as exc:
             self.status.emit(f"Model load failed: {exc}")
@@ -118,7 +164,16 @@ class VideoWorker(QThread):
             self.status.emit("Select a camera.")
             return
 
-        cap = cv2.VideoCapture(self._camera_index, cv2.CAP_DSHOW)
+        backend = _video_backend_for_platform()
+        cap = cv2.VideoCapture(self._camera_index, backend) if backend != 0 else cv2.VideoCapture(self._camera_index)
+        # Fallback: if using a specific backend fails, try default constructor
+        if not cap.isOpened() and backend != 0:
+            try:
+                cap.release()
+            except Exception:
+                pass
+            cap = cv2.VideoCapture(self._camera_index)
+
         if not cap.isOpened():
             self.status.emit("Camera open failed.")
             return
@@ -203,9 +258,30 @@ class MainWindow(QWidget):
         self.load_model_button.clicked.connect(self.load_model)
         self.load_model_button.setMinimumHeight(40)
         
+        # Compute device selector
+        self.compute_combo = QComboBox()
+        self.compute_combo.addItem("cpu")
+        self.compute_combo.addItem("cuda")
+        self.compute_combo.addItem("cuda:0")
+        self.compute_combo.setMaximumWidth(140)
+        self.compute_combo.currentTextChanged.connect(self.on_compute_changed)
+        # Auto-select CUDA if available
+        try:
+            if _cuda_available():
+                idx = self.compute_combo.findText("cuda")
+                if idx >= 0:
+                    self.compute_combo.setCurrentIndex(idx)
+                    self._worker.set_device("cuda")
+            else:
+                self._worker.set_device("cpu")
+        except Exception:
+            self._worker.set_device("cpu")
+        
         header_layout.addWidget(QLabel("Model:"), 0)
         header_layout.addWidget(self.model_label, 1)
         header_layout.addWidget(self.load_model_button, 0)
+        header_layout.addWidget(QLabel("Compute:"), 0)
+        header_layout.addWidget(self.compute_combo, 0)
         header_frame.setLayout(header_layout)
         
         # Metrics Panel
@@ -396,7 +472,10 @@ class MainWindow(QWidget):
         # Load model to extract class names
         if YOLO is not None:
             try:
-                model = YOLO(str(model_path))
+                try:
+                    model = YOLO(str(model_path), device=self.compute_combo.currentText())
+                except TypeError:
+                    model = YOLO(str(model_path))
                 self._model_classes = list(model.names.values())
                 self._populate_class_filters()
                 self.status_label.setText(f"Model loaded: {len(self._model_classes)} classes")
@@ -445,6 +524,8 @@ class MainWindow(QWidget):
             self.status_label.setText("Select a valid camera.")
             return
         self._worker.set_camera_index(int(index))
+        # ensure worker uses selected compute device
+        self._worker.set_device(self.compute_combo.currentText())
         self._worker.start()
 
     @Slot()
@@ -505,6 +586,12 @@ class MainWindow(QWidget):
         self._match_class = self.match_combo.currentData()
         self._match_detected = False
         self._update_match_status_label()
+
+    @Slot(str)
+    def on_compute_changed(self, device: str) -> None:
+        # Update status and tell worker to use selected device
+        self.status_label.setText(f"Compute: {device}")
+        self._worker.set_device(device)
 
     @Slot(QImage, list)
     def on_frame(self, image: QImage, detections: list) -> None:
