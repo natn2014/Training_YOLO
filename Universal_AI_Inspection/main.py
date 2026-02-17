@@ -307,11 +307,13 @@ class MainWindow(QWidget):
         self._relay_connected = False
         self._relay_host = "192.168.1.201"
         self._relay_port = 502
-        # Track 8 class-to-relay-channel mappings: list of {"class": str|None, "channel": int, "last_state": bool}
+        # Track 8 class-to-relay-channel mappings
+        # last_on_time: timestamp when relay was last turned ON (for minimum hold time)
+        self._relay_min_on_seconds = 1.0  # relay stays ON at least this long
         self._relay_mappings = [
-            {"class": None, "channel": i + 1, "last_state": False} for i in range(8)
+            {"class": None, "channel": i + 1, "last_state": False, "last_on_time": 0.0} for i in range(8)
         ]
-        
+            
         # Metrics tracking
         self._fps_counter = 0
         self._fps_timer = 0
@@ -792,17 +794,24 @@ class MainWindow(QWidget):
                 continue
             
             detected = class_name in self._class_counts and self._class_counts[class_name] > 0
+            now = time.time()
+            
             if detected:
                 matched_classes.append(f"{class_name}→CH{channel}")
             
             if detected and not mapping["last_state"]:
+                # Turn ON and record timestamp
                 self._set_relay_channel(channel, True)
                 mapping["last_state"] = True
+                mapping["last_on_time"] = now
             elif not detected and mapping["last_state"]:
-                self._set_relay_channel(channel, False)
-                mapping["last_state"] = False
+                # Only turn OFF if minimum hold time has elapsed
+                elapsed_on = now - mapping["last_on_time"]
+                if elapsed_on >= self._relay_min_on_seconds:
+                    self._set_relay_channel(channel, False)
+                    mapping["last_state"] = False
             
-            self._set_relay_status_cell(row, detected)
+            self._set_relay_status_cell(row, mapping["last_state"])
         
         if matched_classes:
             self.match_status_label.setText(f"Matched: {', '.join(matched_classes)}")
@@ -913,6 +922,7 @@ class MainWindow(QWidget):
                         except Exception:
                             pass
                         mapping["last_state"] = False
+                        mapping["last_on_time"] = 0.0
                 self._relay.disconnect()
             self._relay_connected = False
             self._relay = None
