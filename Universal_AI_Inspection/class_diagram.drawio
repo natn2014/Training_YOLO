@@ -1,0 +1,61 @@
+<mxfile host="65bd71144e">
+    <diagram id="class_diagram" name="Class Relationships">
+        <mxGraphModel dx="614" dy="610" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="mainwindow_class" value="MainWindow&#xa;────────────────&#xa;- _worker: VideoWorker&#xa;- _relay_worker: RelayConnectionWorker&#xa;- _relay: Relay&#xa;- _class_counts: dict&#xa;- _selected_classes: set&#xa;- _relay_mappings: list&#xa;────────────────&#xa;+ connect_relay()&#xa;+ on_frame()&#xa;+ on_relay_connection_result()&#xa;+ _update_match_status_label()" style="rounded=0;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
+                    <mxGeometry x="300" y="40" width="220" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="videoworker_class" value="VideoWorker&#xa;────────────────&#xa;- _camera_index: int&#xa;- _model_path: Path&#xa;- _model: YOLO&#xa;- _device: str&#xa;- _running: bool&#xa;────────────────&#xa;+ run()&#xa;+ set_camera_index()&#xa;+ _load_model()&#xa;+ _extract_detections()" style="rounded=0;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="300" width="180" height="180" as="geometry"/>
+                </mxCell>
+                <mxCell id="relayworker_class" value="RelayConnectionWorker&#xa;────────────────&#xa;- host: str&#xa;- port: int&#xa;- relay: Relay&#xa;────────────────&#xa;+ run()&#xa;+ connection_result: Signal" style="rounded=0;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="300" width="180" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="relay_class" value="Relay&#xa;────────────────&#xa;- host: str&#xa;- port: int&#xa;- sock: socket&#xa;- channels: range&#xa;────────────────&#xa;+ connect()&#xa;+ disconnect()&#xa;+ on(channel)&#xa;+ off(channel)&#xa;+ status(channel)" style="rounded=0;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="480" width="180" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoomlabel_class" value="ZoomableLabel&#xa;────────────────&#xa;- _zoom_level: float&#xa;- _original_pixmap: QPixmap&#xa;────────────────&#xa;+ set_zoom_level()&#xa;+ wheelEvent()&#xa;+ zoom_changed: Signal" style="rounded=0;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+                    <mxGeometry x="280" y="300" width="180" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="rel1" parent="1" source="mainwindow_class" target="videoworker_class" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="390" y="270" as="sourcePoint"/>
+                        <mxPoint x="440" y="220" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="rel2" parent="1" source="mainwindow_class" target="relayworker_class" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="390" y="270" as="sourcePoint"/>
+                        <mxPoint x="440" y="220" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="rel3" parent="1" source="mainwindow_class" target="zoomlabel_class" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="390" y="270" as="sourcePoint"/>
+                        <mxPoint x="440" y="220" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="rel4" parent="1" source="relayworker_class" target="relay_class" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="390" y="270" as="sourcePoint"/>
+                        <mxPoint x="440" y="220" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="label1" value="creates/manages" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="200" y="250" width="80" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="label2" value="contains" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="480" y="250" width="60" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="label3" value="uses" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="370" y="250" width="40" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="label4" value="creates" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="650" y="450" width="50" height="20" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

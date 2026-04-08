@@ -64,6 +64,8 @@ class Relay():
         """Connect to the device."""
         # create socket
         self.sock = socket.socket()
+        # set timeout to prevent blocking
+        self.sock.settimeout(5.0)  # 5 second timeout
         # connect to device
         self.sock.connect((self.host, self.port))
 
